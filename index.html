@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>교안 요약 &amp; 예상문제</title>
+<style>
+:root{--bg:#f6f7fb;--card:#fff;--tx:#1d2330;--mu:#667085;--bd:#e3e6ef;--ac:#3b5bdb;--acx:#fff;--ok:#12805c;--okb:#e3f6ee;--no:#c0392b;--nob:#fdeaea}
+@media (prefers-color-scheme:dark){:root{--bg:#12141a;--card:#1b1e27;--tx:#e8eaf1;--mu:#98a0b3;--bd:#2c3140;--ac:#7c93ff;--acx:#10131c;--ok:#4fd1a0;--okb:#143026;--no:#ff8a7a;--nob:#35191a}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font-family:"Pretendard","Apple SD Gothic Neo","Noto Sans KR",system-ui,sans-serif;line-height:1.65}
+main{max-width:760px;margin:0 auto;padding:24px 16px 64px}
+h1{font-size:1.5rem;margin:0 0 4px}
+.sub{color:var(--mu);margin:0 0 20px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:14px;padding:18px;margin-bottom:16px}
+.drop{border:2px dashed var(--bd);border-radius:12px;padding:28px 12px;text-align:center;cursor:pointer;color:var(--mu)}
+.drop.on{border-color:var(--ac);color:var(--ac)}
+.drop b{color:var(--tx);display:block;margin-bottom:4px;word-break:break-all}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:11px 18px;background:var(--ac);color:var(--acx);font-weight:600}
+button:disabled{opacity:.45;cursor:not-allowed}
+button.ghost{background:transparent;color:var(--ac);border:1px solid var(--bd)}
+.row{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+#status{color:var(--mu);margin-top:12px;min-height:1.4em}
+#err{color:var(--no);margin-top:8px}
+.note{color:var(--mu);font-size:.85rem;margin-top:10px}
+h2{font-size:1.15rem;margin:0 0 10px}
+.sum-title{font-weight:700;margin:12px 0 4px}
+ul{margin:4px 0 0;padding-left:20px}
+li{margin:3px 0}
+.q{margin-bottom:18px;padding-bottom:16px;border-bottom:1px solid var(--bd)}
+.q:last-child{border:0;margin:0;padding:0}
+.qt{font-weight:600;margin-bottom:8px}
+.qs{margin-bottom:8px;padding:10px 12px;border-radius:10px;background:var(--bg)}
+.opt{display:block;width:100%;text-align:left;background:transparent;color:var(--tx);border:1px solid var(--bd);font-weight:400;margin:6px 0;padding:10px 12px}
+.opt:hover:not(:disabled){border-color:var(--ac)}
+.opt.ok{background:var(--okb);border-color:var(--ok);color:var(--ok)}
+.opt.no{background:var(--nob);border-color:var(--no);color:var(--no)}
+.opt:disabled{opacity:1;cursor:default}
+.exp{margin-top:8px;font-size:.93rem;color:var(--mu)}
+#score{font-weight:700;color:var(--ac)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+<h1>교안 요약 &amp; 예상문제</h1>
+<p class="sub">교안 PDF를 올리면 핵심 문장을 요약하고 4지선다 10문제를 만들어 줍니다. 서버·API 키 없이 브라우저에서만 동작합니다.</p>
+
+<div class="card">
+  <div class="drop" id="drop" tabindex="0">
+    <b id="fname">PDF 파일을 끌어놓거나 눌러서 선택</b>
+    <span id="fmeta">텍스트가 포함된 PDF</span>
+  </div>
+  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+  <div class="row"><button id="go" disabled>요약 &amp; 문제 생성</button></div>
+  <div id="status" aria-live="polite"></div>
+  <div id="err" role="alert"></div>
+  <p class="note">AI 모델이 아닌 규칙 기반(단어 빈도 + 빈칸 채우기형 문제) 방식입니다. 파일은 브라우저 밖으로 전송되지 않습니다.</p>
+</div>
+
+<div id="out" hidden>
+  <div class="card" id="sumCard"></div>
+  <div class="card">
+    <h2>예상문제 <span id="score"></span></h2>
+    <div id="quiz"></div>
+    <div class="row"><button class="ghost" id="reset">다시 풀기</button><button class="ghost" id="regen">새 문제 만들기</button></div>
+  </div>
+</div>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const MAX_BYTES = 30 * 1024 * 1024;
+let file = null, doc = null, data = null, answered = {};
+
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+
+const drop = $("drop"), input = $("file");
+drop.onclick = () => input.click();
+drop.onkeydown = e => { if (e.key === "Enter" || e.key === " ") input.click(); };
+drop.ondragover = e => { e.preventDefault(); drop.classList.add("on"); };
+drop.ondragleave = () => drop.classList.remove("on");
+drop.ondrop = e => { e.preventDefault(); drop.classList.remove("on"); if (e.dataTransfer.files[0]) pick(e.dataTransfer.files[0]); };
+input.onchange = () => input.files[0] && pick(input.files[0]);
+
+const setErr = m => $("err").textContent = m || "";
+const setStatus = m => $("status").textContent = m || "";
+
+function pick(f) {
+  setErr(""); setStatus(""); file = null; doc = null; $("go").disabled = true;
+  if (!/\.pdf$/i.test(f.name) && f.type !== "application/pdf") return setErr("PDF 파일만 업로드할 수 있습니다.");
+  if (f.size > MAX_BYTES) return setErr("파일은 30MB 이하만 가능합니다.");
+  file = f; $("fname").textContent = f.name;
+  $("fmeta").textContent = (f.size / 1024 / 1024).toFixed(1) + " MB";
+  $("go").disabled = false;
+}
+
+/* ---------- 1. 텍스트 추출 ---------- */
+async function extract(f) {
+  const pdf = await pdfjsLib.getDocument({ data: await f.arrayBuffer(), isEvalSupported: false }) /* CVE-2024-4367 완화 */.promise;
+  const pages = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    setStatus("텍스트 추출 중… " + i + "/" + pdf.numPages);
+    const tc = await (await pdf.getPage(i)).getTextContent();
+    let t = "";
+    tc.items.forEach(it => { t += it.str + (it.hasEOL ? "\n" : " "); });
+    pages.push(t);
+  }
+  return pages;
+}
+
+/* ---------- 2. 문장·핵심어 분석 ---------- */
+const STOP = new Set("그리고 그러나 하지만 또한 따라서 이러한 그러한 이것 그것 저것 위한 대한 통해 때문 경우 있다 없다 하는 있는 되는 같은 대해 에서 으로 이다 입니다 합니다 한다 된다 수있 등의 the and for are was were this that with from have has not but can will your you its their into about which when then than also such more most other".split(" "));
+const PARTS = ["에서는","으로는","에서","으로","에게","까지","부터","보다","처럼","은","는","이","가","을","를","의","에","와","과","도","로","만"];
+
+function stem(w) {
+  if (/^[A-Za-z0-9]+$/.test(w)) return w;
+  for (const p of PARTS) if (w.length > p.length + 1 && w.endsWith(p)) return w.slice(0, -p.length);
+  return w;
+}
+const tokens = s => (s.match(/[가-힣A-Za-z0-9]{2,}/g) || []);
+
+function analyze(pages) {
+  const sents = [];
+  pages.forEach((txt, pi) => {
+    txt.replace(/[ \t]+/g, " ").split(/\n+|(?<=[.!?])\s+/).forEach(raw => {
+      const s = raw.replace(/^[\-•·▪■□○●※\d.)\s]+/, "").trim();
+      if (s.length >= 15 && s.length <= 160 && /[가-힣A-Za-z]/.test(s)) sents.push({ s, page: pi + 1 });
+    });
+  });
+  const seen = new Set(), uniq = sents.filter(x => !seen.has(x.s) && seen.add(x.s));
+
+  const tf = new Map(), form = new Map();
+  uniq.forEach(x => {
+    x.terms = new Set();
+    tokens(x.s).forEach(w => {
+      const st = stem(w), key = st.toLowerCase();
+      if (st.length < 2 || STOP.has(key) || /^\d+$/.test(st) || /[가-힣](다|하|한|된|할|함)$/.test(st)) return; // 동사·형용사 어미 제외
+      tf.set(key, (tf.get(key) || 0) + 1);
+      if (!form.has(key)) form.set(key, st);
+      x.terms.add(key);
+    });
+  });
+  uniq.forEach(x => {
+    let sc = 0; x.terms.forEach(k => sc += Math.log(1 + tf.get(k)) * (tf.get(k) >= 2 ? 1 : 0.2));
+    x.score = x.terms.size ? sc / Math.sqrt(x.s.length) : 0;
+  });
+  return { sents: uniq, tf, form, pages: pages.length };
+}
+
+/* ---------- 3. 요약 ---------- */
+function summarize(a) {
+  const { sents, tf, form, pages } = a;
+  const keywords = [...tf.entries()].filter(([, c]) => c >= 2).sort((x, y) => y[1] - x[1]).slice(0, 12).map(([k]) => form.get(k));
+  const nSec = Math.min(4, Math.max(1, Math.ceil(pages / 5)));
+  const per = Math.ceil(pages / nSec), sections = [];
+  for (let i = 0; i < nSec; i++) {
+    const lo = i * per + 1, hi = Math.min(pages, (i + 1) * per);
+    const pts = sents.filter(x => x.page >= lo && x.page <= hi).sort((x, y) => y.score - x.score).slice(0, 3)
+      .sort((x, y) => sents.indexOf(x) - sents.indexOf(y)).map(x => x.s);
+    if (pts.length) sections.push({ heading: lo === hi ? "p." + lo : "p." + lo + "–" + hi, points: pts });
+  }
+  const first = sents.slice(0, 3).map(x => x.s).find(s => s.length < 70) || (sents[0] && sents[0].s.slice(0, 60)) || "교안 요약";
+  return { title: first, overview: "총 " + pages + "쪽, 문장 " + sents.length + "개에서 자주 등장한 핵심어를 바탕으로 중요 문장을 추렸습니다.", sections, keywords };
+}
+
+/* ---------- 4. 문제 생성 (빈칸 채우기형 4지선다) ---------- */
+function shuffle(arr) { for (let i = arr.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [arr[i], arr[j]] = [arr[j], arr[i]]; } return arr; }
+
+function makeQuestions(a, want = 10) {
+  const { sents, tf, form } = a;
+  let pool = [...tf.entries()].filter(([, c]) => c >= 2).map(([k]) => k);
+  if (pool.length < 6) pool = [...tf.keys()];
+  const cands = sents.filter(x => x.terms.size && [...x.terms].some(k => tf.get(k) >= 2) && x.s.length >= 25)
+    .map(x => ({ x, j: x.score * (0.6 + Math.random() * 0.8) })).sort((p, q) => q.j - p.j);
+
+  const used = new Set(), qs = [];
+  for (const { x } of cands) {
+    if (qs.length >= want) break;
+    const ans = [...x.terms].filter(k => !used.has(k) && tf.get(k) >= 1 && form.get(k).length <= 14).sort((p, q) => tf.get(q) - tf.get(p))[0];
+    if (!ans) continue;
+    const ansForm = form.get(ans);
+    const idx = x.s.toLowerCase().indexOf(ansForm.toLowerCase());
+    if (idx < 0) continue;
+    const stemText = x.s.slice(0, idx) + "( ______ )" + x.s.slice(idx + ansForm.length);
+    const low = x.s.toLowerCase();
+    const dis = shuffle(pool.filter(k => k !== ans && !low.includes(k)).map(k => k))
+      .sort((p, q) => Math.abs(form.get(p).length - ansForm.length) - Math.abs(form.get(q).length - ansForm.length) + (Math.random() - .5) * 3).slice(0, 3);
+    if (dis.length < 3) continue;
+    const opts = shuffle([ansForm, ...dis.map(k => form.get(k))]);
+    used.add(ans);
+    qs.push({ q: "다음 빈칸에 들어갈 가장 알맞은 말은?", stem: stemText, options: opts, answer: opts.indexOf(ansForm),
+      explanation: "정답은 \"" + ansForm + "\"입니다. (교안 p." + x.page + ") " + x.s });
+  }
+  return qs;
+}
+
+async function generate(fresh) {
+  setErr(""); $("go").disabled = true; $("regen").disabled = true;
+  try {
+    if (!fresh || !doc) {
+      if (!window.pdfjsLib) throw new Error("PDF 라이브러리를 불러오지 못했습니다. 인터넷 연결을 확인해 주세요.");
+      const pages = await extract(file);
+      if (pages.join("").replace(/\s/g, "").length < 200) throw new Error("추출된 텍스트가 거의 없습니다. 스캔본(이미지) PDF는 지원하지 않습니다.");
+      setStatus("분석 중…"); doc = analyze(pages);
+      if (doc.sents.length < 5) throw new Error("분석할 문장이 너무 적습니다. 문장형 서술이 있는 교안을 사용해 주세요.");
+      data = summarize(doc);
+    }
+    data.questions = makeQuestions(doc);
+    if (!data.questions.length) throw new Error("문제를 만들 만한 문장을 찾지 못했습니다.");
+    answered = {}; render();
+    setStatus(data.questions.length < 10 ? "교안 분량이 적어 " + data.questions.length + "문제만 생성되었습니다." : "");
+  } catch (e) { setStatus(""); setErr(e.message || String(e)); }
+  finally { $("go").disabled = !file; $("regen").disabled = false; }
+}
+
+/* ---------- 5. 화면 ---------- */
+function esc(s) { const d = document.createElement("div"); d.textContent = String(s ?? ""); return d.innerHTML; }
+
+function render() {
+  const d = data;
+  let h = "<h2>" + esc(d.title) + "</h2><p>" + esc(d.overview) + "</p>";
+  d.sections.forEach(s => { h += '<div class="sum-title">' + esc(s.heading) + "</div><ul>" + s.points.map(p => "<li>" + esc(p) + "</li>").join("") + "</ul>"; });
+  if (d.keywords.length) h += '<div class="sum-title">핵심 용어</div><p>' + d.keywords.map(esc).join(" · ") + "</p>";
+  $("sumCard").innerHTML = h;
+  renderQuiz(); $("out").hidden = false;
+  $("out").scrollIntoView({ behavior: "smooth" });
+}
+
+function renderQuiz() {
+  const mk = ["①", "②", "③", "④"];
+  $("quiz").innerHTML = data.questions.map((q, i) => {
+    const a = answered[i];
+    return '<div class="q"><div class="qt">' + (i + 1) + ". " + esc(q.q) + '</div><div class="qs">' + esc(q.stem) + "</div>" +
+      q.options.map((o, j) => {
+        let c = "opt";
+        if (a !== undefined) { if (j === q.answer) c += " ok"; else if (j === a) c += " no"; }
+        return '<button class="' + c + '" data-q="' + i + '" data-o="' + j + '"' + (a !== undefined ? " disabled" : "") + ">" + mk[j] + " " + esc(o) + "</button>";
+      }).join("") +
+      (a !== undefined ? '<div class="exp">' + (a === q.answer ? "정답입니다. " : "오답입니다. ") + esc(q.explanation) + "</div>" : "") + "</div>";
+  }).join("");
+  const n = Object.keys(answered).length;
+  const ok = Object.entries(answered).filter(([i, a]) => data.questions[i].answer === a).length;
+  $("score").textContent = n ? "(" + ok + " / " + data.questions.length + " 정답, " + n + "문제 풀이)" : "";
+}
+
+$("quiz").onclick = e => { const b = e.target.closest(".opt"); if (!b) return; answered[+b.dataset.q] = +b.dataset.o; renderQuiz(); };
+$("reset").onclick = () => { answered = {}; renderQuiz(); };
+$("regen").onclick = () => generate(true);
+$("go").onclick = () => generate(false);
+</script>
+</body>
+</html>
